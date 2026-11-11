@@ -166,10 +166,36 @@ class DeepSeekClient:
         r.raise_for_status()
         return _biz(r.json())
 
+    def _get(self, path: str, params: Optional[dict] = None) -> dict:
+        """GET an API endpoint and unwrap its `biz_data`. If the token was
+        rejected, refresh the session once and retry."""
+        token = self.session.token
+        r = self._http.get(path, params=params)
+        if _auth_failed(r):
+            self.refresh_session(stale_token=token)
+            r = self._http.get(path, params=params)
+        r.raise_for_status()
+        return _biz(r.json())
+
     # --- protocol steps -----------------------------------------------------
 
     def create_chat_session(self) -> str:
         return self._post("/api/v0/chat_session/create", {})["chat_session"]["id"]
+
+    def _get_last_message_id(self, session_id: str) -> Optional[int]:
+        """Retrieve the ID of the last message in a session to resume it seamlessly."""
+        try:
+            biz = self._get("/api/v0/chat/history_messages", params={"chat_session_id": session_id})
+            chat_session = biz.get("chat_session") or {}
+            mid = chat_session.get("current_message_id")
+            if mid is not None:
+                return mid
+            messages = biz.get("chat_messages") or []
+            if messages:
+                return messages[-1].get("message_id")
+        except Exception:
+            pass
+        return None
 
     def _pow_header(self, target_path: str = COMPLETION_PATH) -> str:
         challenge = self._post(
@@ -211,6 +237,8 @@ class DeepSeekClient:
         else:
             # Resuming: let the existing thread's model stand (send no model_type).
             model_type = None
+            if parent_id is None:
+                parent_id = self._get_last_message_id(session_id)
         return _Stream(self, prompt, session_id, parent_id, model_type, thinking, search)
 
     def chat(
@@ -232,6 +260,60 @@ class DeepSeekClient:
                 reasoning.append(chunk)
         return Reply(text="".join(text), conversation_id=s.conversation_id,
                      reasoning="".join(reasoning))
+
+    def get_conversations(self, count: int = 50, fetch_all: bool = False) -> list[dict]:
+        """Fetch existing conversations (chat sessions) from DeepSeek.
+
+        Each conversation dict contains:
+            - id: the unique chat session ID (str)
+            - title: title of the conversation (str)
+            - model_type: model used ('default' or 'expert')
+            - pinned: whether it's pinned (bool)
+            - updated_at: timestamp (float)
+
+        Args:
+            count: Number of sessions to fetch per page (default: 50).
+            fetch_all: If True, automatically paginates through all conversations.
+
+        Returns:
+            list[dict]: List of conversation objects.
+        """
+        sessions: list[dict] = []
+        params: dict = {"count": count}
+        while True:
+            biz = self._get("/api/v0/chat_session/fetch_page", params=params)
+            batch = biz.get("chat_sessions") or []
+            sessions.extend(batch)
+            if not fetch_all or not biz.get("has_more") or not batch:
+                break
+            last = batch[-1]
+            params = {
+                "count": count,
+                "lte_cursor.pinned": str(last.get("pinned", False)).lower(),
+                "lte_cursor.updated_at": int(last.get("updated_at", 0) * 1000)
+                if isinstance(last.get("updated_at"), (int, float))
+                else last.get("updated_at"),
+            }
+        return sessions
+
+    def get_chat_sessions(self, count: int = 50, fetch_all: bool = False) -> list[dict]:
+        """Alias for `get_conversations`."""
+        return self.get_conversations(count=count, fetch_all=fetch_all)
+
+    def get_messages(self, conversation_id: str) -> list[dict]:
+        """Fetch all messages for a specific conversation / chat session.
+
+        Args:
+            conversation_id: Either a raw chat_session_id or a client conversation_id
+                             (e.g., 'sessionId:messageId').
+
+        Returns:
+            list[dict]: List of message objects.
+        """
+        session_id, _ = _decode_cid(conversation_id)
+        target_id = session_id or conversation_id
+        biz = self._get("/api/v0/chat/history_messages", params={"chat_session_id": target_id})
+        return biz.get("chat_messages", [])
 
     def close(self) -> None:
         self._http.close()
