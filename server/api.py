@@ -119,7 +119,7 @@ async def chat_completions(req: ChatCompletionRequest):
     # A thread's model is fixed when it's created, so on resume we ignore `model`
     # (the OpenAI SDK always sends one) and let the existing thread's model stand.
     model_type = None if req.conversation_id else resolve_model_type(req.model)
-    prompt = messages_to_prompt(req.messages)
+    prompt = messages_to_prompt(req.messages, tools=req.tools)
 
     try:
         # Off the event loop: get_client() uses Playwright's sync API, which
@@ -148,7 +148,7 @@ async def chat_completions(req: ChatCompletionRequest):
             # as an error frame (the OpenAI SDK raises on it) rather than
             # silently dropping the connection.
             try:
-                yield from stream_chunks(req.model, stream)
+                yield from stream_chunks(req.model, stream, has_tools=bool(req.tools))
             except Exception as e:
                 yield from stream_error(f"DeepSeek request failed: {e}")
 
