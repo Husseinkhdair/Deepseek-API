@@ -58,6 +58,42 @@ class LoginRequired(RuntimeError):
         super().__init__(message)
 
 
+def logout(
+    profile_dir: Path = DEFAULT_PROFILE_DIR,
+    session_file: Path = DEFAULT_SESSION_FILE,
+) -> bool:
+    """Clear all saved sessions and persistent browser profile to completely log out."""
+    success = True
+    # 1. Delete session files
+    try:
+        if session_file.exists():
+            session_file.unlink()
+    except Exception as e:
+        print(f"[auth] Error deleting session file: {e}")
+        success = False
+
+    try:
+        if session_file.parent.exists():
+            for f in session_file.parent.glob("session*.json"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Delete the browser profile directory so a new user can sign in
+    if profile_dir.exists():
+        import shutil
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception as e:
+            print(f"[auth] Error removing profile dir: {e}")
+            success = False
+
+    return success
+
+
 @dataclass
 class Session:
     """A captured signed-in DeepSeek session."""

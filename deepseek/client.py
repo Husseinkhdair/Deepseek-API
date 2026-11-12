@@ -315,6 +315,12 @@ class DeepSeekClient:
         biz = self._get("/api/v0/chat/history_messages", params={"chat_session_id": target_id})
         return biz.get("chat_messages", [])
 
+    def logout(self) -> None:
+        """Close client and wipe saved credentials."""
+        self.close()
+        from .auth import logout
+        logout()
+
     def close(self) -> None:
         self._http.close()
 
@@ -423,7 +429,19 @@ def _parse_sse(lines, meta: Optional[dict] = None) -> Iterator[tuple[str, str]]:
             meta["message_id"] = v
 
     for line in lines:
-        if not line or not line.startswith("data:"):
+        if not line:
+            continue
+        if line.startswith("{"):
+            try:
+                err_obj = json.loads(line)
+                biz_msg = err_obj.get("data", {}).get("biz_msg") or err_obj.get("msg")
+                if biz_msg:
+                    if "user is muted" in biz_msg.lower():
+                        raise RuntimeError("حساب DeepSeek الحالي مكتوم مؤقتاً (user is muted). يرجى تسجيل الخروج واستخدام حساب آخر.")
+                    raise RuntimeError(f"DeepSeek: {biz_msg}")
+            except json.JSONDecodeError:
+                pass
+        if not line.startswith("data:"):
             continue
         payload = line[len("data:"):].strip()
         if not payload or payload == "[DONE]":
